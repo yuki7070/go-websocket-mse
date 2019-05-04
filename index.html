@@ -1,0 +1,186 @@
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>WebSocket MSE Video</title>
+</head>
+<body>
+  <h1>Video</h1>
+  <div>
+    <video controls autoplay style='max-height: 100vh; max-width: 100vw;'></video>
+  </div>
+  <script>
+    const ws = new WebSocket('ws://192.168.1.5:8000/ws');
+    const ms = new MediaSource();
+    let s_buf;
+    ws.binaryType = 'arraybuffer';
+
+    let buf = new Uint8Array();
+    const queue = [];
+    let isInitSeg = true;
+    let ptr = 0;
+    let offset = 0;
+    let updating = false;
+
+    const tagEBML = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]);
+    const tagSegment = new Uint8Array([0x18, 0x53, 0x80, 0x67]);
+    const tagCluster = new Uint8Array([0x1f, 0x43, 0xb6, 0x75]);
+    const tagVoid = new Uint8Array([0xec]);
+
+    ws.addEventListener('open', () => {
+      ws.send('segment');
+      initVideo();
+    })
+
+    ws.addEventListener('message', (e) => {
+      if (typeof e.data !== 'string') {
+        const temp = new Uint8Array(buf.byteLength + e.data.byteLength)
+        temp.set(buf)
+        temp.set(new Uint8Array(e.data), buf.byteLength)
+        buf = temp
+        if (isInitSeg) {
+          appendInitSeg()
+        } else {
+          appendMediaSeg()
+        }
+      }
+      ws.send('segment')
+    })
+
+    const initVideo = () => {
+      ms.addEventListener('sourceopen', initSourceBuf, {
+        once: true
+      })
+      player = document.querySelector('video');
+      player.src = window.URL.createObjectURL(ms);
+    }
+
+    const initSourceBuf = () => {
+      s_buf = ms.addSourceBuffer('video/webm; codecs="vp9,opus"');
+      s_buf.addEventListener('updateend', appendMediaSeg, {
+        once: true
+      })
+      s_buf.addEventListener('updateend', appendQueueSeg, false)
+    }
+
+    const appendInitSeg = () => {
+      if (!equal(tagEBML, buf.slice(ptr, ptr + tagEBML.byteLength))) {
+        console.error('WebM container error');
+        return
+      }
+      ptr += tagEBML.byteLength;
+      r = getElementSize(buf, ptr);
+      ptr += r.offset + r.length;
+
+      if(!equal(tagSegment, buf.slice(ptr, ptr + tagSegment.byteLength))) {
+        console.error('WebM container error');
+        return;
+      }
+      ptr += tagSegment.byteLength;
+      r = getElementSize(buf, ptr);
+      ptr += r.offset;
+
+      
+      while(!equal(tagCluster, buf.slice(ptr, ptr + tagCluster.byteLength))) {
+        if (equal(tagVoid, buf.slice(ptr, ptr + tagVoid.byteLength))) {
+          ptr += tagVoid.byteLength;
+        } else {
+          ptr += tagCluster.byteLength;
+        }
+        r = getElementSize(buf, ptr);
+        ptr += r.offset + r.length;
+      }
+
+      const initSeg = new Uint8Array(buf.slice(0, ptr));
+      s_buf.appendBuffer(initSeg.buffer);
+      buf = buf.slice(ptr);
+      ptr = 0;
+      isInitSeg = false;
+    }
+
+    const appendMediaSeg = () => {
+      if (updating) {
+        if (buf.byteLength < ptr) { return; }
+        updating = false
+      } else {
+        offset = ptr;
+        ptr += tagCluster.byteLength;
+        const r = getElementSize(buf, ptr);
+        ptr += r.length + r.offset;
+        if (ptr - offset <= 4) {
+          ptr = offset;
+          return;
+        }
+        if (buf.byteLength < ptr) {
+          updating = true
+          return;
+        }
+      }
+      
+      updating = false
+      data = buf.slice(offset, ptr)
+      buf = buf.slice(ptr)
+      ptr = 0
+      if (!s_buf.updating && queue.length === 0) {
+        try {
+          s_buf.appendBuffer(data);
+        } catch (e) {
+          if (e.name === 'QuotaExceededError') {
+            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.end(s_buf.buffered.length-1));
+            queue.unshift(data);
+          } else {
+            console.error(err)
+          }
+        }
+      } else {
+        queue.push(data);
+      }
+    }
+
+    const appendQueueSeg = () => {
+      if (!s_buf.updating && queue.length > 0) {
+        data = queue.shift();
+        try {
+          s_buf.appendBuffer(data);
+        } catch (e) {
+          if (e.name === 'QuotaExceededError') {
+            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.end(s_buf.buffered.length-1));
+            queue.unshift(data);
+          } else {
+            console.error(err)
+          }
+        }
+      }
+    }
+
+    const equal = (a, b) => {
+      if (a.byteLength != b.byteLength) { return false; }
+      for (let i = 0; i < a.byteLength; i++) {
+        if (a[i] != b[i]) { return false; }
+      }
+      return true;
+    }
+
+    const getElementSize = (d, p) => {
+      var l = 0;
+      var n = d[p];
+      var j;
+      var t = 0;
+      for(var i = 0 ; i < 8 ; i++) {
+        if((n >> (7-i)) > 0) {
+          j = i;
+          break;
+        }
+      }
+      for(var i = 0 ; i <= j ; i++) {
+        var b = d[p + t];
+        if(i == 0)
+          b -= (1 << 7-j);
+        l = l * 256 + b;
+        t++;
+      }
+      return { length: l, offset: t };
+    }
+  </script>
+</body>
+</html>
