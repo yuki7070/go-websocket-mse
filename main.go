@@ -106,6 +106,7 @@ func (s *Stream) run() {
 		_, err := io.ReadFull(f, buf)
 		if err != nil {
 			close(s.stdout)
+			panic(err)
 			return
 		}
 		s.stdout <- &buf

@@ -44,7 +44,6 @@
           appendMediaSeg()
         }
       }
-      ws.send('segment')
     })
 
     const initVideo = () => {
@@ -66,6 +65,7 @@
     const appendInitSeg = () => {
       if (!equal(tagEBML, buf.slice(ptr, ptr + tagEBML.byteLength))) {
         console.error('WebM container error');
+        ws.send('segment')
         return
       }
       ptr += tagEBML.byteLength;
@@ -74,6 +74,7 @@
 
       if(!equal(tagSegment, buf.slice(ptr, ptr + tagSegment.byteLength))) {
         console.error('WebM container error');
+        ws.send('segment')
         return;
       }
       ptr += tagSegment.byteLength;
@@ -99,6 +100,7 @@
     }
 
     const appendMediaSeg = () => {
+      ws.send('segment')
       if (updating) {
         if (buf.byteLength < ptr) { return; }
         updating = false
@@ -126,8 +128,9 @@
           s_buf.appendBuffer(data);
         } catch (e) {
           if (e.name === 'QuotaExceededError') {
-            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.end(s_buf.buffered.length-1));
+            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.start(s_buf.buffered.length-1));
             queue.unshift(data);
+            return
           } else {
             console.error(err)
           }
@@ -138,14 +141,16 @@
     }
 
     const appendQueueSeg = () => {
+      ws.send('segment')
       if (!s_buf.updating && queue.length > 0) {
         data = queue.shift();
         try {
           s_buf.appendBuffer(data);
         } catch (e) {
           if (e.name === 'QuotaExceededError') {
-            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.end(s_buf.buffered.length-1));
+            s_buf.remove(s_buf.buffered.start(0), s_buf.buffered.start(s_buf.buffered.length-1));
             queue.unshift(data);
+            return
           } else {
             console.error(err)
           }
