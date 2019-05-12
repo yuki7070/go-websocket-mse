@@ -4,6 +4,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"fmt"
+	//"os/exec"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -17,6 +20,41 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
+
+	f, err := os.Open("test.webm")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	/*
+	recdvb := exec.Command("recdvb", []string{"--b25", "--strip", "21", "-", "-"}...)
+	pipe, err := recdvb.StdoutPipe()
+	if err != nil {
+		fmt.Println(err)
+	}
+	recdvb.Stderr = os.Stderr
+	ffmpeg := exec.Command("/usr/bin/ffmpeg", []string{"-i", "pipe:0", "-threads", "0", "-s", "720x480", "-c:v", "vp9", "-f", "webm", "-deadline", "realtime", "-speed", "4", "-cpu-used", "-8", "pipe:1"}...)
+	stdout, err := ffmpeg.StdoutPipe()
+	ffmpeg.Stdin = pipe
+	if err != nil {
+		fmt.Println(err)
+	}
+	ffmpeg.Stderr = os.Stderr
+	*/
+
+	stdout, err := os.Open("./test.webm")
+	if err != nil {
+		panic(err)
+	}
+
+	var r io.Reader = stdout
+	webm := &Webm{
+		ClusterChannel: make(chan *[]byte, 1024),
+		Reader: r,
+	}
+
+	
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -24,6 +62,7 @@ func main() {
 		}
 		c := &Client{conn, make(chan *[]byte, 1024)}
 
+		
 		go func() {
 			for {
 				_, message, err := c.ReadMessage()
@@ -32,30 +71,34 @@ func main() {
 				}
 				m := string(message)
 				if m == "segment" {
-					b := <-c.queue
-					cw, err := c.NextWriter(websocket.BinaryMessage)
+					/*
+					err = recdvb.Start()
 					if err != nil {
-						return
+						fmt.Println(err)
 					}
-					_, err = cw.Write(*b)
+					err = ffmpeg.Start()
 					if err != nil {
-						return
+						fmt.Println(err)
 					}
-					err = cw.Close()
-					if err != nil {
-						return
+					*/
+					go webm.Parse()
+					
+					for b := range webm.ClusterChannel {
+						
+						time.Sleep(50*time.Millisecond)
+						cw, err := c.NextWriter(websocket.BinaryMessage)
+						if err != nil {
+							fmt.Println(err)
+							return
+						}
+						cw.Write(*b)
+						
+						cw.Close()
 					}
 				}
 			}
 		}()
 
-		go func() {
-			var cw io.Writer = c
-			s := newStream("./test.webm")
-			s.writers[&cw] = make(chan bool)
-			go s.run()
-			<-s.writers[&cw]
-		}()
 	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./index.html")
@@ -63,6 +106,7 @@ func main() {
 	if err := http.ListenAndServe(":8000", nil); err != nil {
 		panic(err)
 	}
+	
 }
 
 type Client struct {
@@ -70,57 +114,3 @@ type Client struct {
 	queue chan *[]byte
 }
 
-func (c *Client) Write(b []byte) (int, error) {
-	c.queue <- &b
-	return 0, nil
-}
-
-type Stream struct {
-	path    string
-	writers map[*io.Writer]chan bool
-	stdout  chan *[]byte
-}
-
-func newStream(path string) *Stream {
-	return &Stream{
-		path:    path,
-		writers: make(map[*io.Writer]chan bool, 256),
-		stdout:  make(chan *[]byte, 1024),
-	}
-}
-
-func (s *Stream) run() {
-	go s.write()
-	size := 1024 * 50
-	f, err := os.Open(s.path)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	for {
-		if len(s.writers) == 0 {
-			close(s.stdout)
-			return
-		}
-		buf := make([]byte, size)
-		_, err := io.ReadFull(f, buf)
-		if err != nil {
-			close(s.stdout)
-			panic(err)
-			return
-		}
-		s.stdout <- &buf
-	}
-}
-
-func (s *Stream) write() {
-	for buf := range s.stdout {
-		for w, ch := range s.writers {
-			_, err := (*w).Write(*buf)
-			if err != nil {
-				delete(s.writers, w)
-				close(ch)
-			}
-		}
-	}
-}
